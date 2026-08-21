@@ -1,4 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Node (残骸対策)
 node_modules/
+
+# Environment Variables
 .env
+
+# Logs & OS
 *.log
 .DS_Store

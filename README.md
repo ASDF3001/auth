@@ -1,6 +1,6 @@
 # Discord 認証 Bot (auth)
 
-高機能で安全な Discord サーバー向け認証 Bot です。
+Python (`discord.py`) で動作する、高機能で安全な Discord サーバー向け認証 Bot です。
 
 ## 主な機能
 
@@ -18,7 +18,7 @@
    - 連続でのボタン連打やDoS行為を自動で抑制（3秒の待機時間）
 5. **認証統計・情報コマンド**
    - `/stats`: サーバー内の認証人数・未認証人数・認証率やBotの稼働時間・Pingを表示
-   - `/ping`: WebSocket Pingと往復レイテンシを測定
+   - `/ping`: WebSocket Ping を測定
    - `/help`: コマンドと機能の詳しいヘルプを表示
 6. **認証ログ通知**
    - 認証完了時に指定のチャンネルへログ（ユーザー情報・付与/剥奪ロール・日時）を通知
@@ -32,7 +32,7 @@
 ### 1. 依存関係のインストール
 
 ```bash
-npm install
+pip install -r requirements.txt
 ```
 
 ### 2. 環境変数の設定
@@ -50,9 +50,7 @@ LOG_CHANNEL_ID=your_log_channel_id_here         # 任意（認証ログ通知チ
 ### 3. Botの起動
 
 ```bash
-npm start
-# または
-node index.js
+python main.py
 ```
 
 ## コマンド一覧
