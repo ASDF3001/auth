@@ -222,7 +222,7 @@ class AuthBot(commands.Bot):
         intents = discord.Intents.default()
         intents.guilds = True
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix="!", intents=intents, help_command=None)
 
     async def setup_hook(self):
         try:
