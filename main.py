@@ -18,6 +18,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
 ROLE_ID = int(os.getenv("ROLE_ID")) if os.getenv("ROLE_ID") and os.getenv("ROLE_ID").isdigit() else None
 UNVERIFIED_ROLE_ID = int(os.getenv("UNVERIFIED_ROLE_ID")) if os.getenv("UNVERIFIED_ROLE_ID") and os.getenv("UNVERIFIED_ROLE_ID").isdigit() else None
+BLACKLIST_ROLE_ID = int(os.getenv("BLACKLIST_ROLE_ID")) if os.getenv("BLACKLIST_ROLE_ID") and os.getenv("BLACKLIST_ROLE_ID").isdigit() else None
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID")) if os.getenv("LOG_CHANNEL_ID") and os.getenv("LOG_CHANNEL_ID").isdigit() else None
 
 if not DISCORD_TOKEN:
@@ -84,6 +85,30 @@ async def send_auth_log(guild: discord.Guild, user: discord.User | discord.Membe
     except Exception as e:
         print(f"ログ送信エラー: {e}")
 
+# ブラックリストブロック時のログ送信ヘルパー
+async def send_blacklist_log(guild: discord.Guild, user: discord.User | discord.Member, blacklist_role: discord.Role):
+    if not LOG_CHANNEL_ID:
+        return
+    try:
+        channel = guild.get_channel(LOG_CHANNEL_ID)
+        if not channel:
+            channel = await guild.fetch_channel(LOG_CHANNEL_ID)
+        if channel and isinstance(channel, discord.TextChannel):
+            embed = discord.Embed(
+                title="⚠️ 認証ブロックログ",
+                description="ブラックリストロールを持つユーザーの認証を拒否しました。",
+                color=discord.Color.red(),
+                timestamp=datetime.now()
+            )
+            embed.add_field(name="ユーザー", value=f"{user} ({user.mention})", inline=True)
+            embed.add_field(name="ユーザーID", value=str(user.id), inline=True)
+            embed.add_field(name="所持制限ロール", value=blacklist_role.mention, inline=True)
+            if user.avatar:
+                embed.set_thumbnail(url=user.avatar.url)
+            await channel.send(embed=embed)
+    except Exception as e:
+        print(f"ブラックリストログ送信エラー: {e}")
+
 # ウェルカムDM送信ヘルパー
 async def send_welcome_dm(member: discord.Member):
     try:
@@ -97,11 +122,44 @@ async def send_welcome_dm(member: discord.Member):
     except Exception:
         pass
 
+# メンバーのブラックリストチェック関数
+async def check_blacklist(guild: discord.Guild, member: discord.Member, blacklist_role_id: int | None) -> discord.Role | None:
+    b_id = blacklist_role_id or BLACKLIST_ROLE_ID
+    if not b_id:
+        return None
+
+    b_role = guild.get_role(b_id)
+    if not b_role:
+        try:
+            b_role = await guild.fetch_role(b_id)
+        except Exception:
+            b_role = None
+
+    if b_role and b_role in member.roles:
+        return b_role
+    return None
+
 # 共通ロール付与 & 剥奪処理
-async def handle_role_assignment(interaction: discord.Interaction, target_role_id: int | None, remove_role_id: int | None):
+async def handle_role_assignment(interaction: discord.Interaction, target_role_id: int | None, remove_role_id: int | None, blacklist_role_id: int | None = None):
     guild = interaction.guild
     if not guild:
         return await interaction.response.send_message("この操作はサーバー内でのみ有効です。", ephemeral=True)
+
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except Exception:
+            return await interaction.response.send_message("エラー: ユーザー情報の取得に失敗しました。", ephemeral=True)
+
+    # ブラックリストロールチェック
+    b_role = await check_blacklist(guild, member, blacklist_role_id)
+    if b_role:
+        await send_blacklist_log(guild, member, b_role)
+        return await interaction.response.send_message(
+            f"❌ あなたには認証が制限されたロール（**{b_role.name}**）が付与されているため、認証を行うことができません。\n心当たりがない場合はサーバー管理者にお問い合わせください。",
+            ephemeral=True
+        )
 
     role_id = target_role_id or ROLE_ID
     if not role_id:
@@ -116,13 +174,6 @@ async def handle_role_assignment(interaction: discord.Interaction, target_role_i
 
     if not role:
         return await interaction.response.send_message("エラー: 付与するロールが見つかりません。管理者に連絡してください。", ephemeral=True)
-
-    member = interaction.user
-    if not isinstance(member, discord.Member):
-        try:
-            member = await guild.fetch_member(interaction.user.id)
-        except Exception:
-            return await interaction.response.send_message("エラー: ユーザー情報の取得に失敗しました。", ephemeral=True)
 
     if role in member.roles:
         return await interaction.response.send_message("すでに認証されています！", ephemeral=True)
@@ -158,10 +209,11 @@ async def handle_role_assignment(interaction: discord.Interaction, target_role_i
 
 # モーダル定義
 class CaptchaModal(discord.ui.Modal, title="サーバー認証 (CAPTCHA)"):
-    def __init__(self, target_role_id: int | None, remove_role_id: int | None, expected_captcha: str):
+    def __init__(self, target_role_id: int | None, remove_role_id: int | None, blacklist_role_id: int | None, expected_captcha: str):
         super().__init__()
         self.target_role_id = target_role_id
         self.remove_role_id = remove_role_id
+        self.blacklist_role_id = blacklist_role_id
         self.expected_captcha = expected_captcha
 
         self.captcha_input = discord.ui.TextInput(
@@ -176,13 +228,14 @@ class CaptchaModal(discord.ui.Modal, title="サーバー認証 (CAPTCHA)"):
     async def on_submit(self, interaction: discord.Interaction):
         if self.captcha_input.value.strip().upper() != self.expected_captcha.upper():
             return await interaction.response.send_message("❌ 認証コードが一致しません。もう一度やり直してください。", ephemeral=True)
-        await handle_role_assignment(interaction, self.target_role_id, self.remove_role_id)
+        await handle_role_assignment(interaction, self.target_role_id, self.remove_role_id, self.blacklist_role_id)
 
 class PassphraseModal(discord.ui.Modal, title="サーバー認証 (合言葉)"):
-    def __init__(self, target_role_id: int | None, remove_role_id: int | None, expected_passphrase: str):
+    def __init__(self, target_role_id: int | None, remove_role_id: int | None, blacklist_role_id: int | None, expected_passphrase: str):
         super().__init__()
         self.target_role_id = target_role_id
         self.remove_role_id = remove_role_id
+        self.blacklist_role_id = blacklist_role_id
         self.expected_passphrase = expected_passphrase
 
         self.pass_input = discord.ui.TextInput(
@@ -195,13 +248,14 @@ class PassphraseModal(discord.ui.Modal, title="サーバー認証 (合言葉)"):
     async def on_submit(self, interaction: discord.Interaction):
         if self.pass_input.value.strip() != self.expected_passphrase.strip():
             return await interaction.response.send_message("❌ 合言葉が間違っています。もう一度お試しください。", ephemeral=True)
-        await handle_role_assignment(interaction, self.target_role_id, self.remove_role_id)
+        await handle_role_assignment(interaction, self.target_role_id, self.remove_role_id, self.blacklist_role_id)
 
 class TermsModal(discord.ui.Modal, title="サーバー認証 (利用規約同意)"):
-    def __init__(self, target_role_id: int | None, remove_role_id: int | None):
+    def __init__(self, target_role_id: int | None, remove_role_id: int | None, blacklist_role_id: int | None):
         super().__init__()
         self.target_role_id = target_role_id
         self.remove_role_id = remove_role_id
+        self.blacklist_role_id = blacklist_role_id
 
         self.terms_input = discord.ui.TextInput(
             label="「同意する」と入力してください",
@@ -214,7 +268,7 @@ class TermsModal(discord.ui.Modal, title="サーバー認証 (利用規約同意
         val = self.terms_input.value.strip()
         if val not in ("同意する", "同意") and val.lower() != "agree":
             return await interaction.response.send_message("❌ 「同意する」と正確に入力してください。", ephemeral=True)
-        await handle_role_assignment(interaction, self.target_role_id, self.remove_role_id)
+        await handle_role_assignment(interaction, self.target_role_id, self.remove_role_id, self.blacklist_role_id)
 
 # Botクラス
 class AuthBot(commands.Bot):
@@ -277,27 +331,38 @@ async def on_button_click(interaction: discord.Interaction):
 
     # 旧バージョン互換
     if custom_id == "auth_button":
-        return await handle_role_assignment(interaction, None, None)
+        return await handle_role_assignment(interaction, None, None, None)
 
     if custom_id.startswith("auth_btn:"):
         parts = custom_id.split(":")
         role_id = int(parts[1]) if len(parts) > 1 and parts[1] != "default" and parts[1].isdigit() else None
         remove_role_id = int(parts[2]) if len(parts) > 2 and parts[2] != "none" and parts[2].isdigit() else None
-        auth_type = parts[3] if len(parts) > 3 else "direct"
+        blacklist_role_id = int(parts[3]) if len(parts) > 3 and parts[3] != "none" and parts[3].isdigit() else None
+        auth_type = parts[4] if len(parts) > 4 else "direct"
+
+        # ボタン押下時に即座にブラックリスト判定
+        if interaction.guild and isinstance(interaction.user, discord.Member):
+            b_role = await check_blacklist(interaction.guild, interaction.user, blacklist_role_id)
+            if b_role:
+                await send_blacklist_log(interaction.guild, interaction.user, b_role)
+                return await interaction.response.send_message(
+                    f"❌ あなたには認証が制限されたロール（**{b_role.name}**）が付与されているため、認証を行うことができません。\n心当たりがない場合はサーバー管理者にお問い合わせください。",
+                    ephemeral=True
+                )
 
         if auth_type == "captcha":
             captcha = generate_captcha(4)
-            return await interaction.response.send_modal(CaptchaModal(role_id, remove_role_id, captcha))
+            return await interaction.response.send_modal(CaptchaModal(role_id, remove_role_id, blacklist_role_id, captcha))
 
         if auth_type == "pass":
-            passphrase = ":".join(parts[4:]) if len(parts) > 4 else ""
-            return await interaction.response.send_modal(PassphraseModal(role_id, remove_role_id, passphrase))
+            passphrase = ":".join(parts[5:]) if len(parts) > 5 else ""
+            return await interaction.response.send_modal(PassphraseModal(role_id, remove_role_id, blacklist_role_id, passphrase))
 
         if auth_type == "terms":
-            return await interaction.response.send_modal(TermsModal(role_id, remove_role_id))
+            return await interaction.response.send_modal(TermsModal(role_id, remove_role_id, blacklist_role_id))
 
         # direct
-        return await handle_role_assignment(interaction, role_id, remove_role_id)
+        return await handle_role_assignment(interaction, role_id, remove_role_id, blacklist_role_id)
 
 # === スラッシュコマンド ===
 
@@ -306,6 +371,7 @@ async def on_button_click(interaction: discord.Interaction):
 @app_commands.describe(
     role="認証時に付与するロール（未指定時はデフォルトロール）",
     remove_role="認証時に剥奪するロール（未認証ロール等）",
+    blacklist_role="認証を禁止するブラックリストロール（要注意ロール等）",
     title="パネルのタイトル",
     description="パネルの説明文",
     button_label="ボタンのテキスト（デフォルト: 認証する）",
@@ -323,6 +389,7 @@ async def set_panel(
     interaction: discord.Interaction,
     role: discord.Role | None = None,
     remove_role: discord.Role | None = None,
+    blacklist_role: discord.Role | None = None,
     title: str = "✅ サーバー認証",
     description: str = "下のボタンを押して認証を完了し、すべてのチャンネルを解放してください。",
     button_label: str = "認証する",
@@ -336,13 +403,15 @@ async def set_panel(
 
     role_id_str = str(role.id) if role else "default"
     remove_role_id_str = str(remove_role.id) if remove_role else "none"
+    blacklist_role_id_str = str(blacklist_role.id) if blacklist_role else "none"
 
+    prefix = f"auth_btn:{role_id_str}:{remove_role_id_str}:{blacklist_role_id_str}"
     if selected_auth == "passphrase":
-        custom_id = f"auth_btn:{role_id_str}:{remove_role_id_str}:pass:{passphrase}"
+        custom_id = f"{prefix}:pass:{passphrase}"
     elif selected_auth == "terms":
-        custom_id = f"auth_btn:{role_id_str}:{remove_role_id_str}:terms"
+        custom_id = f"{prefix}:terms"
     else:
-        custom_id = f"auth_btn:{role_id_str}:{remove_role_id_str}:{selected_auth}"
+        custom_id = f"{prefix}:{selected_auth}"
 
     embed = discord.Embed(
         title=title,
@@ -427,7 +496,7 @@ async def help_command(interaction: discord.Interaction):
     )
     embed.add_field(
         name="🛠️ 管理者コマンド",
-        value="`/set-panel`\n認証パネルを設置します。付与ロールや剥奪ロール、認証方式（ワンクリック/CAPTCHA/合言葉/規約同意）を細かく設定できます。",
+        value="`/set-panel`\n認証パネルを設置します。付与ロール・剥奪ロール・ブラックリストロール（要注意ロール等）・認証方式（ワンクリック/CAPTCHA/合言葉/規約同意）を細かく設定できます。",
         inline=False
     )
     embed.add_field(
@@ -438,6 +507,11 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="🔐 認証方式の一覧",
         value="• **ワンクリック認証**: ボタンを押すだけで即時認証\n• **CAPTCHA認証**: ランダムな4文字の確認コード入力\n• **合言葉認証**: 設定されたキーワードを入力\n• **規約同意認証**: 規約を確認し「同意する」と入力",
+        inline=False
+    )
+    embed.add_field(
+        name="🚫 ブラックリスト機能",
+        value="要注意ロールや制限ロールを持つユーザーの認証を自動でブロックし、ログに記録します。",
         inline=False
     )
     embed.set_footer(text="Powered by rds9")
