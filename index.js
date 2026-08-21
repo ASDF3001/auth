@@ -1,4 +1,14 @@
-require('dotenv').config();
+try {
+    require('dotenv').config();
+} catch {
+    try {
+        if (typeof process.loadEnvFile === 'function') {
+            process.loadEnvFile();
+        }
+    } catch {
+        // .env がない環境（クラウド側の環境変数設定など）でも続行
+    }
+}
 const { 
     Client, GatewayIntentBits, REST, Routes, 
     SlashCommandBuilder, PermissionFlagsBits, 
