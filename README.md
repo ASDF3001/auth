@@ -2,6 +2,11 @@
 
 Python (`discord.py`) で動作する、高機能で安全な Discord サーバー向け認証 Bot です。
 
+## 導入
+
+https://discord.com/oauth2/authorize?client_id=1516079643709411378
+こちらのリンクから導入もできます
+
 ## 主な機能
 
 1. **認証パネル設置 (`/set-panel`)**
